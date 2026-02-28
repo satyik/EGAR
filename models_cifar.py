@@ -54,19 +54,7 @@ class RecursiveBlock(nn.Module):
             
         return x
 
-def parameter_free_downsample(x, target_C):
-    # Parameter-free spatial downsampling step (2x2 avg pool matches the 32->16->8->4 resolution drop)
-    x_pooled = F.avg_pool2d(x, kernel_size=2, stride=2)
-    B, C, H, W = x_pooled.shape
-    
-    if target_C > C:
-        padding = target_C - C
-        x_padded = F.pad(x_pooled, (0, 0, 0, 0, 0, padding))
-        return x_padded
-    elif target_C < C:
-        return x_pooled[:, :target_C, :, :]
-    else:
-        return x_pooled
+# The parameter-free handling is now dynamically done inside the main loop based on downsampling schedules.
 
 def parameter_free_stem(x, target_C):
     # Parameter-free initial embedding: pad RGB (3 channels) to target_C with zeros
@@ -76,9 +64,14 @@ def parameter_free_stem(x, target_C):
     return x_padded
 
 class _BaseRecursiveArchitecture(nn.Module):
-    def __init__(self, Cs, Ts, dilations=[1, 2, 4], num_classes=100):
+    def __init__(self, Cs, Ts, downsamples=None, dilations=[1, 2, 4], num_classes=100):
         super().__init__()
         self.Cs = Cs
+        if downsamples is None:
+            # By default, downsample at every stage except the first one
+            downsamples = [False] + [True] * (len(Cs) - 1)
+        self.downsamples = downsamples
+        
         self.stages = nn.ModuleList()
         for C, T in zip(Cs, Ts):
             self.stages.append(RecursiveBlock(C, T, dilations=dilations))
@@ -91,10 +84,21 @@ class _BaseRecursiveArchitecture(nn.Module):
         
         for i, stage in enumerate(self.stages):
             if i > 0:
-                x = parameter_free_downsample(x, self.Cs[i])
+                if self.downsamples[i]:
+                    x = F.avg_pool2d(x, kernel_size=2, stride=2)
+                
+                # Parameter-free channel adjustment
+                B, C, H, W = x.shape
+                target_C = self.Cs[i]
+                if target_C > C:
+                    padding = target_C - C
+                    x = F.pad(x, (0, 0, 0, 0, 0, padding))
+                elif target_C < C:
+                    x = x[:, :target_C, :, :]
+                    
             x = stage(x)
             
-        # Spatial pooling mapping 4x4 spatial resolution to structural vector
+        # Spatial pooling mapping spatial resolution to structural vector
         x = F.adaptive_avg_pool2d(x, (1, 1))
         x = torch.flatten(x, 1)
         x = self.classifier(x)
