@@ -41,6 +41,8 @@ def train_and_eval(candidate_id, epochs=5):
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
     trainloader, testloader = get_dataloaders()
     
+    best_acc = 0.0
+    
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -60,17 +62,34 @@ def train_and_eval(candidate_id, epochs=5):
                 
         # Evaluate
         model.eval()
-        correct = 0
+        correct_top1 = 0
+        correct_top5 = 0
         total = 0
         with torch.no_grad():
             for data in testloader:
                 inputs, labels = data[0].to(device), data[1].to(device)
                 outputs = model(inputs)
+                
+                # Top 1 Accuracy
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-        acc = 100 * correct / total
-        print(f"Epoch {epoch + 1} Test Accuracy: {acc:.2f}%")
+                correct_top1 += (predicted == labels).sum().item()
+                
+                # Top 5 Accuracy
+                _, pred_top5 = outputs.topk(5, 1, True, True)
+                pred_top5 = pred_top5.t()
+                correct = pred_top5.eq(labels.view(1, -1).expand_as(pred_top5))
+                correct_top5 += correct[:5].reshape(-1).float().sum(0, keepdim=True).item()
+                
+        acc_top1 = 100 * correct_top1 / total
+        acc_top5 = 100 * correct_top5 / total
+        print(f"Epoch {epoch + 1} Test Accuracy -> Top-1: {acc_top1:.2f}% | Top-5: {acc_top5:.2f}%")
+        
+        # Save best model
+        if acc_top1 > best_acc:
+            print(f"[*] New best Top-1 Accuracy: {acc_top1:.2f}%. Saving model...")
+            torch.save(model.state_dict(), f"best_model_candidate_{candidate_id}.pth")
+            best_acc = acc_top1
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train CIFAR-100 Recursive Models")
