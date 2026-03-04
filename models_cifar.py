@@ -109,6 +109,51 @@ class _BaseRecursiveArchitecture(nn.Module):
         x = self.classifier(x)
         return x
 
+class _ScaleC3SuperArchitecture(nn.Module):
+    def __init__(self, num_classes=100, num_super_classes=20):
+        super().__init__()
+        self.Cs = [64, 256, 224, 256, 384, 320]
+        self.Ts = [8, 10, 10, 10, 10, 10]
+        self.downsamples = [False, True, True, False, True, False]
+        self.dilations = [1, 2, 4]
+        
+        self.stages = nn.ModuleList()
+        for C, T in zip(self.Cs, self.Ts):
+            self.stages.append(RecursiveBlock(C, T, dilations=self.dilations))
+            
+        # Dual Classifier Heads
+        self.classifier = nn.Linear(self.Cs[-1], num_classes, bias=False)
+        self.classifier_super = nn.Linear(self.Cs[-1], num_super_classes, bias=False)
+        
+    def forward(self, x):
+        x = parameter_free_stem(x, self.Cs[0])
+        
+        for i, stage in enumerate(self.stages):
+            if i > 0:
+                if self.downsamples[i]:
+                    x = F.avg_pool2d(x, kernel_size=2, stride=2)
+                
+                # Parameter-free channel adjustment (Tiling)
+                B, C, H, W = x.shape
+                target_C = self.Cs[i]
+                if target_C > C:
+                    repeats = (target_C + C - 1) // C
+                    x = x.repeat(1, repeats, 1, 1)[:, :target_C, :, :]
+                elif target_C < C:
+                    x = x[:, :target_C, :, :]
+                    
+            x = stage(x)
+            
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = torch.flatten(x, 1)
+        
+        out_fine = self.classifier(x)
+        out_super = self.classifier_super(x)
+        return out_fine, out_super
+
+def create_scale_c3_super():
+    return _ScaleC3SuperArchitecture(num_classes=100, num_super_classes=20)
+
 def create_model(candidate_id):
     if candidate_id == 1:
         # Candidate 1: Deep & Narrow
@@ -342,6 +387,53 @@ class _ScaleC4Architecture(nn.Module):
 def create_scale_c4():
     return _ScaleC4Architecture(num_classes=100)
 
+class _ScaleC4SuperArchitecture(nn.Module):
+    def __init__(self, num_classes=100, num_super_classes=20):
+        super().__init__()
+        self.Cs = [64, 128, 256, 512]
+        self.downsamples = [False, True, True, True]
+        self.Ts = [8, 10, 10, 10]
+        self.dilations = [1, 2, 4]
+        
+        self.stages = nn.ModuleList()
+        # Drop paths for stochastic depth: [0.0, 0.1, 0.2, 0.3]
+        drop_probs = [0.0, 0.1, 0.2, 0.3]
+        for C, T, dp in zip(self.Cs, self.Ts, drop_probs):
+            self.stages.append(RecursiveBlockSym(C, T, dilations=self.dilations, drop_prob=dp))
+            
+        # Dual Classifier Heads
+        self.classifier = nn.Linear(self.Cs[-1], num_classes, bias=False)
+        self.classifier_super = nn.Linear(self.Cs[-1], num_super_classes, bias=False)
+        
+    def forward(self, x):
+        x = parameter_free_stem(x, self.Cs[0])
+        
+        for i, stage in enumerate(self.stages):
+            if i > 0:
+                if self.downsamples[i]:
+                    x = F.avg_pool2d(x, kernel_size=2, stride=2)
+                
+                # Parameter-free channel adjustment (Tiling)
+                B, C, H, W = x.shape
+                target_C = self.Cs[i]
+                if target_C > C:
+                    repeats = (target_C + C - 1) // C
+                    x = x.repeat(1, repeats, 1, 1)[:, :target_C, :, :]
+                elif target_C < C:
+                    x = x[:, :target_C, :, :]
+                    
+            x = stage(x)
+            
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = torch.flatten(x, 1)
+        
+        out_fine = self.classifier(x)
+        out_super = self.classifier_super(x)
+        return out_fine, out_super
+
+def create_scale_c4_super():
+    return _ScaleC4SuperArchitecture(num_classes=100, num_super_classes=20)
+
 if __name__ == "__main__":
     def test_params():
         expected_params = {
@@ -364,5 +456,15 @@ if __name__ == "__main__":
         model_c4 = create_scale_c4()
         total_c4 = sum(p.numel() for p in model_c4.parameters() if p.requires_grad)
         print(f"SCALE-C4 Total Params: {total_c4}")
+        
+        # SCALE-C4 Super Math Check
+        model_c4_super = create_scale_c4_super()
+        total_c4_super = sum(p.numel() for p in model_c4_super.parameters() if p.requires_grad)
+        print(f"SCALE-C4 Super (Dual Head) Total Params: {total_c4_super}")
+        
+        # SCALE-C3 Super Math Check
+        model_c3_super = create_scale_c3_super()
+        total_c3_super = sum(p.numel() for p in model_c3_super.parameters() if p.requires_grad)
+        print(f"SCALE-C3 Super Total Params: {total_c3_super}")
             
     test_params()
