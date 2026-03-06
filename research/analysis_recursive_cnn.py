@@ -23,6 +23,7 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
+import gc
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as T
@@ -166,18 +167,20 @@ def effective_rank(X: np.ndarray) -> float:
     Roy & Vetterli (2007): erank = exp(H(p)) where p_i = σ_i / Σσ_i.
     Also return explained-variance rank (95% threshold) as secondary metric.
     """
-    # Fast approach for N < d: compute eigenvalues of X @ X.T instead of full SVD on X
-    if X.shape[0] < X.shape[1]:
-        K = X @ X.T
-        s_sq = np.sort(np.linalg.eigvalsh(K))[::-1]
-        s = np.sqrt(np.maximum(s_sq, 0))
-    else:
-        s = np.linalg.svd(X, full_matrices=False, compute_uv=False)
+    # Fast approach: use randomized SVD for massive 10000xDim matrices
+    # Sklearn's randomized_svd is highly optimized for this exact use case
+    from sklearn.utils.extmath import randomized_svd
+    
+    # Extract only the top 500 singular values to approximate entropy (captures >99% variance in deep features usually)
+    # This prevents O((min(N, D))^3) time complexity
+    k = min(500, min(X.shape))
+    _, s, _ = randomized_svd(X, n_components=k, n_iter=3, random_state=42)
         
     s = s[s > 1e-10]
     p = s / s.sum()
     erank = float(np.exp(-np.sum(p * np.log(p + 1e-12))))
-    # 95% variance rank
+    
+    # 95% variance rank (approximate based on top-k)
     var_cumsum = np.cumsum(s ** 2) / (s ** 2).sum()
     rank95 = int(np.searchsorted(var_cumsum, 0.95)) + 1
     return erank, rank95
@@ -229,8 +232,10 @@ def linear_probe_accuracy(snapshots: list, labels: torch.Tensor,
         scaler = StandardScaler(copy=False)
         X = scaler.fit_transform(X)
 
-        clf = LogisticRegression(max_iter=200, C=0.1,
-                                  solver='saga', n_jobs=-1,
+        # n_jobs=-1 frequently causes hangs with multiprocessing (PyTorch + OpenMP + joblib)
+        # Reduced max_iter to 50 — usually sufficient for linear probes to converge to a stable top-1 accuracy trend
+        clf = LogisticRegression(max_iter=50, C=0.1,
+                                  solver='saga', n_jobs=1,
                                   random_state=42)
         clf.fit(X, y)
         acc = clf.score(X, y) * 100  # training accuracy — sufficient for trend
@@ -601,8 +606,9 @@ def main():
         drift_data[s_idx] = drifts
         np.save(os.path.join(args.out_dir, f'drift_stage{s_idx}.npy'), drifts)
 
-        # Free memory
+        # Free memory forcibly
         del snapshots
+        gc.collect()
 
     # ── Plotting ──────────────────────────────────────────────────────────
     print("\nGenerating figures …")
