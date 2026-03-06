@@ -147,7 +147,14 @@ def compute_cka_matrix(snapshots: list) -> np.ndarray:
     Returns T×T CKA matrix.
     """
     T = len(snapshots)
-    feats = [flatten_features(s) for s in snapshots]
+    
+    # Subsample to a max of 1500 images to prevent the O(N^2 * D) CKA math from taking hours
+    # 1500 images perfectly capture representational similarity statistically.
+    N = snapshots[0].size(0)
+    n_samples = min(1500, N)
+    idx = torch.randperm(N)[:n_samples]
+    
+    feats = [flatten_features(s[idx]) for s in snapshots]
     cka_mat = np.eye(T)
     for i in range(T):
         for j in range(i + 1, T):
