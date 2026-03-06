@@ -90,8 +90,7 @@ def get_dataloaders(batch_size=128):
 def train_and_eval(epochs=150, batch_size=128, lr=0.001, cutmix_prob=0.5):
     device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
     print(f"\n--- Ultimate Training: SCALE-C4 (CutMix + Superclass) on {device} ---")
-    
-    model = create_scale_c4_super().to(device)
+    model = create_scale_c4_super(num_macro_classes=None).to(device)
     
     # 1. Parameter Validation
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
