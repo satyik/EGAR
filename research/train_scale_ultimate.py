@@ -199,7 +199,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, scaler,
         imgs_mix, ta, tb, lam = cutmix_data(imgs, labels, prob=0.5)
 
         optimizer.zero_grad()
-        with torch.amp.autocast(device.type):
+        with torch.amp.autocast(device):
             lf, ls = model(imgs_mix)
             loss   = hierarchical_loss(lf, ls, ta, tb, lam,
 
@@ -270,7 +270,7 @@ def main():
                           momentum=0.9, weight_decay=args.wd, nesterov=True)
     scheduler = build_scheduler(optimizer, args.warmup, args.epochs,
                                  len(train_loader))
-    scaler = torch.amp.GradScaler(device.type)
+    scaler = torch.amp.GradScaler(device)
 
     start_epoch = 0
     best_acc    = 0.0
