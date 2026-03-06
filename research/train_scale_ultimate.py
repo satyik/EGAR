@@ -20,7 +20,8 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as T
-from torch.cuda.amp import GradScaler, autocast
+# from torch.cuda.amp import GradScaler, autocast
+
 
 from models_cifar import scale_c3_ultimate, fine_to_super
 
@@ -198,17 +199,23 @@ def train_one_epoch(model, loader, optimizer, scheduler, scaler,
         imgs_mix, ta, tb, lam = cutmix_data(imgs, labels, prob=0.5)
 
         optimizer.zero_grad()
-        with autocast():
+        with torch.amp.autocast(device.type):
             lf, ls = model(imgs_mix)
             loss   = hierarchical_loss(lf, ls, ta, tb, lam,
+
                                        criterion_fine, criterion_super)
 
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        
+        scale_before = scaler.get_scale()
         scaler.step(optimizer)
         scaler.update()
-        scheduler.step()
+        
+        # Only step the learning rate scheduler if optimizer step wasn't skipped (due to nan/inf gradients)
+        if scale_before <= scaler.get_scale():
+            scheduler.step()
 
         running_loss += loss.item() * imgs.size(0)
         pred = lf.argmax(1)
@@ -242,7 +249,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
     os.makedirs(args.save_dir, exist_ok=True)
 
     # Data
@@ -263,7 +270,7 @@ def main():
                           momentum=0.9, weight_decay=args.wd, nesterov=True)
     scheduler = build_scheduler(optimizer, args.warmup, args.epochs,
                                  len(train_loader))
-    scaler = GradScaler()
+    scaler = torch.amp.GradScaler(device.type)
 
     start_epoch = 0
     best_acc    = 0.0
