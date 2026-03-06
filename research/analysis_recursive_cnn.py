@@ -100,8 +100,8 @@ def collect_stage_iterations(model, loader, stage_idx: int, device: torch.device
 
 
 def flatten_features(x: torch.Tensor) -> np.ndarray:
-    """[N, C, H, W] → [N, C*H*W] float64 numpy array."""
-    return x.reshape(x.size(0), -1).double().numpy()
+    """[N, C, H, W] → [N, C*H*W] float32 numpy array."""
+    return x.reshape(x.size(0), -1).numpy()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,28 +121,23 @@ def _linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
     Centered Kernel Alignment with linear kernels.
     X, Y: [N, d1], [N, d2]
     CKA(X,Y) = ||Y^T X||_F^2 / (||X^T X||_F * ||Y^T Y||_F)
-    Uses the HSIC formulation for numerical stability.
     """
     # Centre
     X = X - X.mean(0, keepdims=True)
     Y = Y - Y.mean(0, keepdims=True)
 
-    # Gram inner products  (avoid N×N matrix for large N)
-    # HSIC(K,L) = (1/(n-1)^2) tr(K_c L_c)
-    # For linear: K = X X^T, HSIC = ||X^T Y||_F^2 / (n-1)^2
-    n = X.shape[0]
-    XtY = X.T @ Y                      # [d1, d2]
-    hsic_xy = np.linalg.norm(XtY, 'fro') ** 2
-
-    XtX = X.T @ X
-    hsic_xx = np.linalg.norm(XtX, 'fro')
-
-    YtY = Y.T @ Y
-    hsic_yy = np.linalg.norm(YtY, 'fro')
+    # If d > N, computing X.T @ Y is O(d^2) memory. We should compute K = X @ X.T instead!
+    # tr(X^T Y Y^T X) = tr(X X^T Y Y^T) = sum((X X^T) * (Y Y^T))
+    K = X @ X.T
+    L = Y @ Y.T
+    
+    hsic_xy = np.sum(K * L)
+    hsic_xx = np.sum(K * K)
+    hsic_yy = np.sum(L * L)
 
     if hsic_xx == 0 or hsic_yy == 0:
         return 0.0
-    return float(hsic_xy / (hsic_xx * hsic_yy) ** 0.5)
+    return float(hsic_xy / np.sqrt(hsic_xx * hsic_yy))
 
 
 def compute_cka_matrix(snapshots: list) -> np.ndarray:
@@ -171,7 +166,14 @@ def effective_rank(X: np.ndarray) -> float:
     Roy & Vetterli (2007): erank = exp(H(p)) where p_i = σ_i / Σσ_i.
     Also return explained-variance rank (95% threshold) as secondary metric.
     """
-    _, s, _ = np.linalg.svd(X, full_matrices=False)
+    # Fast approach for N < d: compute eigenvalues of X @ X.T instead of full SVD on X
+    if X.shape[0] < X.shape[1]:
+        K = X @ X.T
+        s_sq = np.sort(np.linalg.eigvalsh(K))[::-1]
+        s = np.sqrt(np.maximum(s_sq, 0))
+    else:
+        s = np.linalg.svd(X, full_matrices=False, compute_uv=False)
+        
     s = s[s > 1e-10]
     p = s / s.sum()
     erank = float(np.exp(-np.sum(p * np.log(p + 1e-12))))
@@ -324,8 +326,8 @@ def compute_drift(snapshots: list) -> np.ndarray:
     """
     drifts = []
     for t in range(len(snapshots) - 1):
-        Xt  = snapshots[t].reshape(snapshots[t].size(0), -1).double().numpy()
-        Xt1 = snapshots[t+1].reshape(snapshots[t+1].size(0), -1).double().numpy()
+        Xt  = snapshots[t].numpy().reshape(snapshots[t].size(0), -1)
+        Xt1 = snapshots[t+1].numpy().reshape(snapshots[t+1].size(0), -1)
         diff_norm = np.linalg.norm(Xt1 - Xt, 'fro')
         base_norm = np.linalg.norm(Xt, 'fro')
         drifts.append(diff_norm / (base_norm + 1e-12))

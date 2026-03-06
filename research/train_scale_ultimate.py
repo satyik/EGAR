@@ -23,7 +23,27 @@ import torchvision.transforms as T
 # from torch.cuda.amp import GradScaler, autocast
 
 
-from models_cifar import scale_c3_ultimate, fine_to_super
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from models_cifar import create_scale_c3_super
+
+CIFAR100_SUPERCLASS = [
+    4, 1, 14, 8, 0, 6, 7, 7, 18, 3,
+    3, 14, 9, 18, 7, 11, 3, 9, 7, 11,
+    6, 11, 5, 10, 7, 6, 13, 15, 3, 15,
+    0, 11, 1, 10, 12, 14, 16, 9, 11, 5,
+    5, 19, 8, 8, 15, 13, 14, 17, 18, 10,
+    16, 4, 17, 4, 2, 0, 17, 4, 18, 17,
+    10, 3, 2, 12, 12, 16, 12, 1, 9, 19,
+    2, 10, 0, 1, 16, 12, 9, 13, 15, 13,
+    16, 19, 2, 4, 6, 19, 5, 5, 8, 19,
+    18, 1, 2, 15, 6, 0, 17, 8, 14, 13,
+]
+_SUPER_LABEL_MAP = torch.tensor(CIFAR100_SUPERCLASS, dtype=torch.long)
+
+def fine_to_super(fine_labels: torch.Tensor) -> torch.Tensor:
+    return _SUPER_LABEL_MAP.to(fine_labels.device)[fine_labels]
 
 
 # ---------------------------------------------------------------------------
@@ -155,9 +175,9 @@ class GradLogger:
     def __init__(self, model, stage_idx: int = 0):
         self.stage_idx = stage_idx
         self.grads = []
-        block = model.blocks[stage_idx]
+        stage = model.stages[stage_idx]
         # hook on the depthwise convs (first dilation)
-        block.dw_convs[0].weight.register_hook(self._hook)
+        stage.conv3x3_dw.weight.register_hook(self._hook)
 
     def _hook(self, grad):
         self.grads.append(grad.norm().item())
@@ -257,7 +277,7 @@ def main():
         args.data, args.batch_size, args.workers)
 
     # Model
-    model = scale_c3_ultimate().to(device)
+    model = create_scale_c3_super(num_macro_classes=None).to(device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {total_params:,}")
 
